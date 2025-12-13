@@ -42,8 +42,13 @@ have_cmd() {
 detect_package_manager() {
   if have_cmd apt-get; then
     echo "apt-get"
+  elif have_cmd brew; then
+    echo "brew"
+  elif [[ "$OSTYPE" == "darwin"* ]]; then
+    # macOS without brew, install it
+    echo "brew-install"
   else
-    log "Unsupported OS. Only Debian/Ubuntu are supported."
+    log "Unsupported OS. Please install on Ubuntu/Debian or macOS."
     exit 1
   fi
 }
@@ -56,11 +61,31 @@ install_base_packages() {
   local PM
   PM=$(detect_package_manager)
 
-  log "Updating package index..."
-  sudo "$PM" update -y
-
-  log "Installing curl, ca-certificates, gnupg, build-essential..."
-  sudo "$PM" install -y curl ca-certificates gnupg build-essential
+  case "$PM" in
+    "apt-get")
+      log "Updating package index..."
+      sudo "$PM" update -y
+      log "Installing curl, ca-certificates, gnupg, build-essential..."
+      sudo "$PM" install -y curl ca-certificates gnupg build-essential
+      ;;
+    "brew-install")
+      log "Installing Homebrew..."
+      /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+      # Add brew to PATH for current session
+      if [[ -x "/opt/homebrew/bin/brew" ]]; then
+        eval "$(/opt/homebrew/bin/brew shellenv)"
+      elif [[ -x "/usr/local/bin/brew" ]]; then
+        eval "$(/usr/local/bin/brew shellenv)"
+      fi
+      ;;
+    "brew")
+      log "Homebrew is already installed."
+      log "Updating Homebrew..."
+      brew update
+      log "Installing curl, gnupg..."
+      brew install curl gnupg
+      ;;
+  esac
 }
 
 install_node() {
@@ -76,9 +101,24 @@ install_node() {
     fi
   fi
 
-  log "Installing Node.js $NODE_INSTALL_VERSION.x..."
-  curl -fsSL "https://deb.nodesource.com/setup_${NODE_INSTALL_VERSION}.x" | sudo -E bash -
-  sudo "$PM" install -y nodejs
+  case "$PM" in
+    "apt-get")
+      log "Installing Node.js $NODE_INSTALL_VERSION.x..."
+      curl -fsSL "https://deb.nodesource.com/setup_${NODE_INSTALL_VERSION}.x" | sudo -E bash -
+      sudo "$PM" install -y nodejs
+      ;;
+    "brew"|"brew-install")
+      log "Installing Node.js $NODE_INSTALL_VERSION.x..."
+      # Ensure brew is in PATH
+      if have_cmd brew; then
+        brew install node
+      else
+        log "Homebrew not found in PATH. Please restart your terminal or run:"
+        echo 'eval "$(/opt/homebrew/bin/brew shellenv)" 2>/dev/null || eval "$(/usr/local/bin/brew shellenv)"'
+        exit 1
+      fi
+      ;;
+  esac
 
   if ! have_cmd node; then
     log "Node installation failed."
@@ -122,15 +162,33 @@ prompt_for_keys() {
 fix_path() {
   log "Ensuring ~/.local/bin and npm global bin are on PATH..."
 
-  if ! grep -q 'export PATH="$HOME/.local/bin:$PATH"' "$HOME/.bashrc" 2>/dev/null; then
-    echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc"
+  # Detect shell profile file
+  local PROFILE=""
+  if [[ -f "$HOME/.bashrc" ]]; then
+    PROFILE="$HOME/.bashrc"
+  elif [[ -f "$HOME/.zshrc" ]]; then
+    PROFILE="$HOME/.zshrc"
+  elif [[ -f "$HOME/.bash_profile" ]]; then
+    PROFILE="$HOME/.bash_profile"
+  elif [[ -f "$HOME/.profile" ]]; then
+    PROFILE="$HOME/.profile"
   fi
 
+  # Add ~/.local/bin to PATH
+  if [ -n "$PROFILE" ]; then
+    if ! grep -q 'export PATH="$HOME/.local/bin:$PATH"' "$PROFILE" 2>/dev/null; then
+      echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$PROFILE"
+    fi
+  fi
+
+  # Add npm global bin to PATH
   local NPM_BIN
   NPM_BIN=$(npm bin -g 2>/dev/null || true)
   if [ -n "$NPM_BIN" ]; then
-    if ! grep -q "export PATH=\"$NPM_BIN:\$PATH\"" "$HOME/.bashrc" 2>/dev/null; then
-      echo "export PATH=\"$NPM_BIN:\$PATH\"" >> "$HOME/.bashrc"
+    if [ -n "$PROFILE" ]; then
+      if ! grep -q "export PATH=\"$NPM_BIN:\$PATH\"" "$PROFILE" 2>/dev/null; then
+        echo "export PATH=\"$NPM_BIN:\$PATH\"" >> "$PROFILE"
+      fi
     fi
     export PATH="$NPM_BIN:$PATH"
   fi
@@ -190,32 +248,6 @@ EOC
   "timeout_ms": $API_TIMEOUT_MS,
   "trust_all_directories": true,
   "mcpServers": {
-    "zai-mcp-server": {
-      "type": "stdio",
-      "command": "npx",
-      "args": [
-        "-y",
-        "@z_ai/mcp-server"
-      ],
-      "env": {
-        "Z_AI_API_KEY": "$AUTO_API_KEY",
-        "Z_AI_MODE": "ZAI"
-      }
-    },
-    "web-search-prime": {
-      "type": "http",
-      "url": "https://api.z.ai/api/mcp/web_search_prime/mcp",
-      "headers": {
-        "Authorization": "Bearer $AUTO_API_KEY"
-      }
-    },
-    "web-reader": {
-      "type": "http",
-      "url": "https://api.z.ai/api/mcp/web_reader/mcp",
-      "headers": {
-        "Authorization": "Bearer $AUTO_API_KEY"
-      }
-    },
     "sequential-thinking": {
       "type": "stdio",
       "command": "npx",
